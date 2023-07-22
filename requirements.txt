@@ -13,7 +13,6 @@ sdv==1.2.1
 # pandas == 1.2.1
 # pickleshare == 0.7.5
 
-# pytorch-lightining == 1.2.10 -> 없음
 # tensorflow == 2.11.0
 # scikit-learn == 0.23.2
 # torch == 1.13.1
