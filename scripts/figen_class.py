@@ -3,20 +3,22 @@ from sdv.single_table import CTGANSynthesizer
 from sklearn.mixture import GaussianMixture
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sdv.metadata import SingleTableMetadata
+from sklearn.neighbors import KernelDensity
+from sdv.lite import SingleTablePreset
 
-
+# push + prd
 
 # imbalanced에 data level로 해결하는 모델
 class FiGen:
-    def __init__(self, ratio: float, index: List[int]):
+    def __init__(self, ratio: float, index: List[str]):
         """
         고정적으로 사용하는 값을 저장
         
         Args:
             ratio (float): small class+생성된 데이터와 large class의 비율 
-            index (List[int]): 범주형, 연속형 구분하기 위한 연속형 변수의 컬럼 인덱스       
+            index (List[int]): 범주형, 연속형 구분하기 위한 연속형 변수의 컬럼명 인덱스       
         """
         self.result = 0
         self.ratio = ratio
@@ -34,13 +36,12 @@ class FiGen:
         Returns:    
             데이터의 분포 중 중간 부분을 추출하여 리턴
         """
-        scaler = StandardScaler()
-        data_scaled = scaler.fit_transform(data)
 
+        scaler = StandardScaler()
+        data_scaled = scaler.fit_transform(data.values)
         kde = KernelDensity(kernel="gaussian", bandwidth=0.5).fit(
             data_scaled
         )  ##TODO: 계산이 안터지도록 하기, gmm으로 변경
-
         log_prob = kde.score_samples(data_scaled)
         prob = np.exp(log_prob)
         threshold_low, threshold_high = np.percentile(prob, [start, last])
@@ -51,10 +52,10 @@ class FiGen:
             return data_middle
         else:
             print("No middle 50% found, returning original data")
-            return np.array([])
-
+            return []
+        
     def find_categorical(
-        self, suitable_generated_small_X: pd.DataFrame, categorical_small_X: pd.DataFrame
+        self, suitable_generated_small_X: pd.DataFrame, categorical_small_X: pd.DataFrame, small_X: pd.DataFrame
     ):  # ****************
         """
         생성된 연속형변수와 기존 연속형 변수의 cosine simmilarity를 기준으로 가장 가까운 기존 변수를 찾은 후 해당 변수의 범주형 값을 가져옴
@@ -76,8 +77,8 @@ class FiGen:
         )
 
         orgin_small_non_cat_scaled_X = pd.DataFrame(
-            scaler.fit_transform(small_X.iloc[:, self.index]),
-            columns=small_X.iloc[:, self.index].columns,
+            scaler.fit_transform(small_X[ self.index]),
+            columns=self.index
         )
 
         # 데이터프레임을 numpy 배열로 변환
@@ -92,13 +93,12 @@ class FiGen:
 
         # 가장큰 열 인덱스가 들어있는 리스트의 인덱스에 따라 범주형 값 가져오기
         synthetic_small_X = pd.concat(
-            [suitable_generated_small_scaled_X, categorical_small_X.loc[max_indices]],
-            axis=1,
+            [suitable_generated_small_scaled_X, categorical_small_X.loc[max_indices]],axis=1
         )
 
         return synthetic_small_X
 
-    def suitable_judge(self, small_X: pd.DataFrame, large_X: pd.DataFrame):
+    def suitable_judge(self, midlle_small_X:pd.DataFrame, small_X: pd.DataFrame, large_X: pd.DataFrame):
         """
            generated_x : 생성된 small class x 데이터
            small_X : 원본 small class x 데이터
@@ -106,19 +106,19 @@ class FiGen:
         """
 
         center_small_X = np.mean(
-            small_X.cpu().numpy(), axis=1, dtype=np.float64, out=None 
+            small_X.numpy(), axis=1, dtype=np.float64, out=None 
         )
 
         radius_small_X = np.max(
-            np.linalg.norm(small_X.cpu().numpy() - center_small_X, axis=1)
+            np.linalg.norm(small_X.numpy() - center_small_X, axis=1)
         )
 
         center_large_X = np.mean(
-            large_X.cpu().numpy(), axis=1, dtype=np.float64, out=None 
+            large_X.numpy(), axis=1, dtype=np.float64, out=None 
         )
 
         radius_large_X = np.max(
-            np.linalg.norm(large_X.cpu().numpy() - center_large_X, axis=1)
+            np.linalg.norm(large_X.numpy() - center_large_X, axis=1)
         )
 
         synthetic_sample = pd.DataFrame()  # 최종 합치기
@@ -160,46 +160,48 @@ class FiGen:
     
     
     def generate_synthetic(
-        self, small_X: pd.DataFrame, large_X: pd.DataFrame
+        self, small_X: pd.DataFrame, large_X: pd.DataFrame, small_Y: pd.DataFrame, large_Y: pd.DataFrame
     ) -> Tuple[pd.DataFrame, pd.Series]:
         """
         생성된 데이터셋 + 기존 데이터셋을 합쳐 통합 데이터셋을 생성
         
         Args:
-            ssmall_X (pd.DataFrame): small class의 x
+            small_X (pd.DataFrame): small class의 x
             large_X (pd.DataFrame): large class의 x
         Returns:
             생성된 데이터셋 + 기존 데이터셋을 합쳐 통합 데이터셋을 리턴
         """
+
+        # Nan 값 제거 요청 
+        assert not large_X.isnull().values.any(), "large_X 입력 데이터에 NaN 값이 포함되어 있습니다." 
+        assert not small_X.isnull().values.any(), "small_X 입력 데이터에 NaN 값이 포함되어 있습니다."    
+ 
+
         # 연속형 변수만 가져오는 부분
-        continue_small_X = small_X.iloc[:, self.index]
-        continue_large_X = large_X.iloc[:, self.index]
+        continue_small_X = small_X[self.index]
+        continue_large_X = large_X[self.index]
 
         # 범주형 변수만 가져오는 부분
-        categorical_small_X = small_X.iloc[
-            :, [i for i in range(len(small_X.columns)) if i not in self.index]
-        ]
-        categorical_large_X = large_X.iloc[
-            :, [i for i in range(len(small_X.columns)) if i not in self.index]
-        ]
+        categorical_small_X = small_X[list(set(small_X.columns) - set(self.index))]
+        categorical_large_X = large_X[list(set(small_X.columns) - set(self.index))]
 
         # 상위 n% 필터링 부분
-        midlle_small_X = extract_middle_percent(
-            self, continue_small_X, 25, 75
+        midlle_small_X = self.extract_middle_percent(
+            continue_small_X, 25, 75
         )  ##TODO: 추후에 하이퍼 파라미터로 뺄 수 있음
 
-        midlle_large_X = extract_middle_percent(
-            self, continue_large_X, 15, 85
+        midlle_large_X = self.extract_middle_percent(
+            continue_large_X, 15, 85
         )  ##TODO: 추후에 하이퍼 파라미터로 뺄 수 있음
 
         # 연속형 데이터 생성 및 데이터 적합 판단
 
-        suitable_generated_small_X = suitable_judge(midlle_small_X, large_X)
+        suitable_generated_small_X = self.suitable_judge(midlle_small_X, small_X, large_X)
 
         # 코사인 유사도 기반으로 가장 가까운 기존 변수의 범주형 변수 값 가져오기
 
-        synthetic_small_X = find_categorical(
-            suitable_generated_small_X, categorical_small_X, self.index
+        synthetic_small_X = self.find_categorical(
+            suitable_generated_small_X, categorical_small_X, small_X ,self.index
         )
 
         # small class와 large class 합치기
@@ -216,7 +218,7 @@ class FiGen:
             [midlle_large_X, categorical_large_X.loc[midlle_large_X.index]], axis=1
         )
 
-        origin_large_x["target"] = small_X[0]
+        origin_large_x["target"] = small_Y[0]
         total = pd.concat([small_total_x, origin_large_x], axis=0)
         return total.drop(columns=["target"]), total["target"]
     
@@ -226,13 +228,10 @@ class FiGen:
         small_X: pd.DataFrame,
         small_Y: pd.DataFrame,
         large_X: pd.DataFrame,
-        large_Y: pd.DataFrame,
-        ratio : float ,
-        index : list[int]
-        
+        large_Y: pd.DataFrame        
     ):
         """
-        이 fit 함수가 뭘 하는지
+        데이터를 학습 시키는 함수
         Args:
             small_X (pd.DataFrame): small class의 x
             small_Y (pd.DataFrame): small class의 y
@@ -244,6 +243,6 @@ class FiGen:
         """
         # 합성+ 기존 data set 생성
         synthetic_X, synthetic_Y = self.generate_synthetic(
-            small_X=small_X, large_X=large_X, ratio=self.ratio, index=self.index,
+            small_X, large_X, small_Y, large_Y
         )
         return synthetic_X, synthetic_Y
