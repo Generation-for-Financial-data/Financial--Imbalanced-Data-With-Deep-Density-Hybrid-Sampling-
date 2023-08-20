@@ -36,7 +36,6 @@ class FiGen:
         Returns:    
             데이터의 분포 중 중간 부분을 추출하여 리턴
         """
-
         scaler = StandardScaler()
         data_scaled = scaler.fit_transform(data.values)
         kde = KernelDensity(kernel="gaussian", bandwidth=0.5).fit(
@@ -70,23 +69,24 @@ class FiGen:
         # Min-Max 스케일링을 위한 객체 생성
         scaler = MinMaxScaler()
 
+
         # 열별 Min-Max 스케일링 수행
         suitable_generated_small_scaled_X = pd.DataFrame(
             scaler.fit_transform(suitable_generated_small_X),
             columns=suitable_generated_small_X.columns,
         )
-
+ 
         orgin_small_non_cat_scaled_X = pd.DataFrame(
-            scaler.fit_transform(small_X[ self.index]),
+            scaler.fit_transform(small_X[self.index]),
             columns=self.index
         )
 
         # 데이터프레임을 numpy 배열로 변환
         array_mxn = suitable_generated_small_scaled_X.values
         array_kxn = orgin_small_non_cat_scaled_X.values
-
+        
         # 행렬곱 수행 (mxn과 nxk로 계산)
-        result_array = np.dot(array_mxn, array_kxn)
+        result_array = np.dot(array_mxn, array_kxn.T)
 
         # 각 행에서 최대값을 가지는 열의 인덱스를 가져와서 리스트로 만들기
         max_indices = np.argmax(result_array, axis=1).tolist()
@@ -101,28 +101,27 @@ class FiGen:
     def suitable_judge(self, midlle_small_X:pd.DataFrame, small_X: pd.DataFrame, large_X: pd.DataFrame):
         """
            generated_x : 생성된 small class x 데이터
-           small_X : 원본 small class x 데이터
+           small_X : 원본 small class x 데이터 
            large_X : 원본 large class x 데이터
         """
-
+        # 연속형small x로 뽑아야함
         center_small_X = np.mean(
-            small_X.values, axis=1, dtype=np.float64, out=None 
+            small_X[self.index].values, axis=0, dtype=np.float64, out=None 
         )
-
         radius_small_X = np.max(
-            np.linalg.norm(small_X.values - center_small_X, axis=1)
+            np.linalg.norm(small_X[self.index].values - center_small_X, axis=1)
         )
 
         center_large_X = np.mean(
-            large_X.values, axis=1, dtype=np.float64, out=None 
+            large_X[self.index].values, axis=0, dtype=np.float64, out=None 
         )
 
         radius_large_X = np.max(
-            np.linalg.norm(large_X.values - center_large_X, axis=1)
+            np.linalg.norm(large_X[self.index].values - center_large_X, axis=1)
         )
 
         synthetic_sample = pd.DataFrame()  # 최종 합치기
-        
+       
 
         # ctgan으로 연속형 생성 부분
         metadata = SingleTableMetadata()
@@ -130,32 +129,31 @@ class FiGen:
         
         synthesizer = SingleTablePreset(metadata, name='FAST_ML')
         synthesizer.fit(data=midlle_small_X)
-                
-            
-        # large class의 데이터 사이즈 만큼 데이터 생성
-        synthetic_data = synthesizer.sample(num_rows=len(large_X)) # 새로운 데이터를 생성하는 비용 vs 데이터가 적합한지 판단하는 비용 
-                
+        
+        
+        # 합성된 개수 / 원래 large 클래스 개수 <= ratio 만족시 그만 생성    
+        
+        while len(synthetic_sample) / len(large_X) < self.ratio:
 
-        # 합성된 개수 / 원래 클래스 개수 <= ratio 만족시 그만 생성하는 것으로
-        i = 0 
-        while len(synthetic_sample) / len(large_X) >= self.ratio: # 한줄한줄이 아니라 한꺼번에 판단후에 추가하기
-            
-            z = synthetic_data.loc[i]
+            # large class의 데이터 사이즈 10배 만큼 데이터 생성
+            synthetic_data = synthesizer.sample(num_rows=len(large_X))  
+
+            synthetic_samples_to_generate = int((self.ratio - len(synthetic_sample) / len(large_X)) * len(large_X))
+            if synthetic_samples_to_generate == 0:
+                break  # 더 이상 생성이 필요하지 않을 경우 루프를 빠져나감
+            z = synthetic_data.iloc[:synthetic_samples_to_generate]  # 벡터화된 방식으로 일괄 처리
+        
+            distances_small = np.linalg.norm(z.values[:, np.newaxis, :] - center_small_X, axis=2)
+            distances_large = np.linalg.norm(z.values[:, np.newaxis, :] - center_large_X, axis=2)
+        
+            small_condition = distances_small < radius_small_X
+            large_condition = distances_large < radius_large_X
 
             # 생성된 small class 데이터가 small, large class 중 small에 가까운지, small class의 지름을 넘지는 않는지
-            if (
-                np.linalg.norm(z - center_small_X) < np.linalg.norm(z - center_large_X)
-                and np.linalg.norm(z - center_small_X) < radius_small_X
-            ):
-                synthetic_sample.append(z)  
-                
-            i+=1
+            condition = np.logical_and(small_condition, distances_small < distances_large)
+        
+            synthetic_sample = pd.concat([synthetic_sample, z[condition]])
             
-            # 생성된 샘플을 다 검정해도 생성 비율을 만족하지 못할 경우
-            if i+1 == len(large_X) and len(synthetic_sample) / len(large_X) < self.ratio:
-                i=0
-                synthetic_data = synthesizer.sample(num_rows=len(large_X))
-                
         return synthetic_sample.reset_index(drop=True)
     
     
@@ -185,33 +183,31 @@ class FiGen:
         categorical_small_X = small_X[list(set(small_X.columns) - set(self.index))]
         categorical_large_X = large_X[list(set(small_X.columns) - set(self.index))]
 
+    
         # 상위 n% 필터링 부분
         midlle_small_X = self.extract_middle_percent(
             continue_small_X, 25, 75
         )  ##TODO: 추후에 하이퍼 파라미터로 뺄 수 있음
-
         midlle_large_X = self.extract_middle_percent(
             continue_large_X, 15, 85
         )  ##TODO: 추후에 하이퍼 파라미터로 뺄 수 있음
-
+        
         # 연속형 데이터 생성 및 데이터 적합 판단
 
         suitable_generated_small_X = self.suitable_judge(midlle_small_X, small_X, large_X)
-
+      
         # 코사인 유사도 기반으로 가장 가까운 기존 변수의 범주형 변수 값 가져오기
-
+  
         synthetic_small_X = self.find_categorical(
-            suitable_generated_small_X, categorical_small_X, small_X ,self.index
+            suitable_generated_small_X, categorical_small_X, small_X 
         )
-
+       
         # small class와 large class 합치기
-
         origin_small_x = pd.concat(
             [midlle_small_X, categorical_small_X.loc[midlle_small_X.index]], axis=1
         )
-
+   
         small_total_x = pd.concat([synthetic_small_X, origin_small_x], axis=0)
-
         small_total_x["target"] = small_Y[0]
 
         origin_large_x = pd.concat(
@@ -246,4 +242,3 @@ class FiGen:
             small_X, large_X, small_Y, large_Y
         )
         return synthetic_X, synthetic_Y
-
