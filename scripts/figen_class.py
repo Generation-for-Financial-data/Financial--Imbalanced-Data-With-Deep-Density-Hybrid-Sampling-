@@ -1,8 +1,6 @@
 from typing import List, Tuple
-from sdv.single_table import CTGANSynthesizer
 import numpy as np
 import pandas as pd
-from sklearn.mixture import GaussianMixture
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sdv.metadata import SingleTableMetadata
