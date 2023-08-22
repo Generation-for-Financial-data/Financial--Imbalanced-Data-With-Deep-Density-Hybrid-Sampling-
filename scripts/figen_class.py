@@ -9,6 +9,8 @@ from sdv.lite import SingleTablePreset
 
 # push + prd
 
+TARGET: str = "target"
+
 
 # imbalanced에 data level로 해결하는 모델
 class FiGen:
@@ -78,7 +80,8 @@ class FiGen:
         )
 
         orgin_small_non_cat_scaled_X = pd.DataFrame(
-            scaler.fit_transform(small_X[self.index]), columns=self.index
+            scaler.fit_transform(small_X[self.index]),
+            columns=self.index,
         )
 
         # 데이터프레임을 numpy 배열로 변환
@@ -160,7 +163,7 @@ class FiGen:
             )
 
             small_condition = distances_small < radius_small_X
-            large_condition = distances_large < radius_large_X
+            large_condition = distances_large < radius_large_X  # TODO: 사용 확인 부탁드려요
 
             # 생성된 small class 데이터가 small, large class 중 small에 가까운지, small class의 지름을 넘지는 않는지
             condition = np.logical_and(
@@ -197,8 +200,9 @@ class FiGen:
         continue_large_X = large_X[self.index]
 
         # 범주형 변수만 가져오는 부분
-        categorical_small_X = small_X[list(set(small_X.columns) - set(self.index))]
-        categorical_large_X = large_X[list(set(small_X.columns) - set(self.index))]
+        categorical_colnames = list(set(small_X.columns) - set(self.index))
+        categorical_small_X = small_X[categorical_colnames]
+        categorical_large_X = large_X[categorical_colnames]
 
         # 상위 n% 필터링 부분
         midlle_small_X = self.extract_middle_percent(
@@ -225,17 +229,17 @@ class FiGen:
 
         small_total_x = pd.concat([synthetic_small_X, origin_small_x], axis=0)
 
-        small_total_x["target"] = small_Y.iloc[:1].values[0][0]
+        small_total_x[TARGET] = small_Y.iloc[:1].values[0][0]
 
         origin_large_x = pd.concat(
             [midlle_large_X, categorical_large_X.loc[midlle_large_X.index]], axis=1
         )
 
-        origin_large_x["target"] = large_Y.iloc[:1].values[0][0]
+        origin_large_x[TARGET] = large_Y.iloc[:1].values[0][0]
 
         total = pd.concat([small_total_x, origin_large_x], axis=0)
 
-        return total.drop(columns=["target"]), total["target"]
+        return total.drop(columns=[TARGET]), total[TARGET]
 
     def fit(
         self,
